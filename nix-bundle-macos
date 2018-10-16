@@ -1,4 +1,4 @@
-#!/bin/env bash
+#!/usr/bin/env bash
 
 PROGRAM_NAME="$1"
 INSTALLER_DIR="/Applications/$PROGRAM_NAME-Installer"
@@ -41,7 +41,7 @@ done
 rm -rf "$INSTALLER_DIR"
 sudo mkdir "$INSTALLER_DIR"
 sudo cp -r "$APP_DIR" "$INSTALLER_DIR"
-ln -s /Applications "$INSTALLER_DIR/Applications"
+sudo ln -s /Applications "$INSTALLER_DIR/Applications"
 echo 'Use Disk Utility "File > New Image > Image from Folder" to create DMG.'
 
 # TODO: look at using a DMG builder like this:
