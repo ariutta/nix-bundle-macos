@@ -1,0 +1,51 @@
+#!/bin/env bash
+
+PROGRAM_NAME="$1"
+INSTALLER_DIR="/Applications/$PROGRAM_NAME-Installer"
+
+NIX_STORE_OLD="/nix/store"
+
+OUT_PATH=$(nix-env -q "$PROGRAM_NAME" --out-path --no-name)
+APP_NAME=$(ls -1 "$OUT_PATH/Applications/" | head -n 1)
+APP_DIR="/Applications/$APP_NAME"
+
+sudo rm -rf "$APP_DIR"
+
+sudo cp -r "$OUT_PATH/Applications/$APP_NAME" "$APP_DIR"
+
+NIX_STORE_NEW="$APP_DIR/.ns"
+
+sudo mkdir -p "$NIX_STORE_NEW"
+
+deps=$(nix-store -qR "$OUT_PATH")
+
+for dep_path_old in $deps; do
+        dep_path_new=$(echo "$dep_path_old" | sed "s#${NIX_STORE_OLD}/[0-9a-z]\{32\}\-#${NIX_STORE_NEW}/#")
+        sudo cp -r "$dep_path_old" "$dep_path_new"
+done
+
+for dep_path_old in $deps; do
+        dep_path_new=$(echo "$dep_path_old" | sed "s#${NIX_STORE_OLD}/[0-9a-z]\{32\}\-#${NIX_STORE_NEW}/#")
+        export dep_path_old
+        export dep_path_new
+
+        # Replace content in text files
+        grep -rIl "$NIX_STORE_OLD" "$APP_DIR" \
+                | xargs -n 1 -P 2 sh -c 'sudo sed -i "" -e "s#${dep_path_old}#${dep_path_new}#g" "$1"' sh
+
+        # Replace content in binary files
+        grep -rl "$NIX_STORE_OLD" "$APP_DIR" \
+                | xargs -n 1 -P 2 sh -c 'sudo ./patch_strings_in_file "$1" "$dep_path_old" "$dep_path_new"' sh
+done
+
+rm -rf "$INSTALLER_DIR"
+sudo mkdir "$INSTALLER_DIR"
+sudo cp -r "$APP_DIR" "$INSTALLER_DIR"
+ln -s /Applications "$INSTALLER_DIR/Applications"
+echo 'Use Disk Utility "File > New Image > Image from Folder" to create DMG.'
+
+# TODO: look at using a DMG builder like this:
+# https://github.com/andreyvit/create-dmg
+
+unset dep_path_old
+unset dep_path_new
