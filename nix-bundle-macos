@@ -1,51 +1,139 @@
 #!/usr/bin/env bash
 
-PROGRAM_NAME="$1"
-INSTALLER_DIR="/Applications/$PROGRAM_NAME-Installer"
+set -e
 
-NIX_STORE_OLD="/nix/store"
+cleanup() {
+    unset dep_path_old
+    unset dep_path_new
+}
+trap cleanup EXIT INT QUIT TERM
+
+if [ -z "$1" ]; then
+	echo "Missing required input PROGRAM_NAME"
+	exit;
+fi
+
+if [ "$1" == "--help" ]; then
+	echo "Usage:"
+	echo "nix-bundle-macos PROGRAM_NAME"
+	exit;
+fi
+
+PROGRAM_NAME="$1"
+
+NIX_STORE_SOURCE="/nix/store"
+if [ ! -d "$NIX_STORE_SOURCE" ]; then
+	echo "Missing directory $NIX_STORE_SOURCE"
+	exit;
+fi
 
 OUT_PATH=$(nix-env -q "$PROGRAM_NAME" --out-path --no-name)
-APP_NAME=$(ls -1 "$OUT_PATH/Applications/" | head -n 1)
-APP_DIR="/Applications/$APP_NAME"
 
-sudo rm -rf "$APP_DIR"
+if [ ! -d "$OUT_PATH" ]; then
+	echo "Missing directory for $PROGRAM_NAME"
+	exit;
+fi
 
-sudo cp -r "$OUT_PATH/Applications/$APP_NAME" "$APP_DIR"
+SOURCE_DIR="/dev/null"
+TARGET_DIR="/dev/null"
 
-NIX_STORE_NEW="$APP_DIR/.ns"
+APP_NAME=""
 
-sudo mkdir -p "$NIX_STORE_NEW"
+if  [ -d "$OUT_PATH/Applications" ]; then
+	CONTENT_COUNT=$(ls -1 "$OUT_PATH/Applications" | wc -l)
+	if [ "$CONTENT_COUNT" -ne 1 ]; then
+		echo "I don't know how to handle $CONTENT_COUNT items in $OUT_PATH/Applications"
+		exit
+	fi
+	APP_NAME=$(ls -1 "$OUT_PATH/Applications/" | head -n 1)
+	SOURCE_DIR="$OUT_PATH/Applications/$APP_NAME"
+	TARGET_DIR="/Applications/$APP_NAME"
+elif [ -d "$OUT_PATH/bin" ]; then
+	SOURCE_DIR="$OUT_PATH/bin"
+	TARGET_DIR="/usr/local/$PROGRAM_NAME"
+else
+	echo "No Application or bin directory found for $PROGRAM_NAME!"
+	exit
+fi
+
+if [ -d "$TARGET_DIR" ]; then
+	while true; do
+		read -rp "Remove old $TARGET_DIR directory? y/n " yn
+		case $yn in
+			[Yy]* ) sudo rm -rf "$TARGET_DIR"; break;;
+			[Nn]* ) exit;;
+			* ) echo "Please answer yes or no.";;
+		esac
+	done
+fi
+
+sudo cp -r "$SOURCE_DIR" "$TARGET_DIR"
+
+NIX_STORE_TARGET="$TARGET_DIR/.ns"
+
+sudo mkdir -p "$NIX_STORE_TARGET"
 
 deps=$(nix-store -qR "$OUT_PATH")
 
 for dep_path_old in $deps; do
-        dep_path_new=$(echo "$dep_path_old" | sed "s#${NIX_STORE_OLD}/[0-9a-z]\{32\}\-#${NIX_STORE_NEW}/#")
+        dep_path_new=$(echo "$dep_path_old" | sed "s#${NIX_STORE_SOURCE}/[0-9a-z]\{32\}\-#${NIX_STORE_TARGET}/#")
         sudo cp -r "$dep_path_old" "$dep_path_new"
 done
 
 for dep_path_old in $deps; do
-        dep_path_new=$(echo "$dep_path_old" | sed "s#${NIX_STORE_OLD}/[0-9a-z]\{32\}\-#${NIX_STORE_NEW}/#")
+        dep_path_new=$(echo "$dep_path_old" | sed "s#${NIX_STORE_SOURCE}/[0-9a-z]\{32\}\-#${NIX_STORE_TARGET}/#")
         export dep_path_old
         export dep_path_new
 
         # Replace content in text files
-        grep -rIl "$NIX_STORE_OLD" "$APP_DIR" \
-                | xargs -n 1 -P 2 sh -c 'sudo sed -i "" -e "s#${dep_path_old}#${dep_path_new}#g" "$1"' sh
+        grep -rIl "$NIX_STORE_SOURCE" "$TARGET_DIR" \
+                | xargs -n 1 -P 4 sh -c 'sudo sed -i "" -e "s#${dep_path_old}#${dep_path_new}#g" "$1"' sh
 
         # Replace content in binary files
-        grep -rl "$NIX_STORE_OLD" "$APP_DIR" \
-                | xargs -n 1 -P 2 sh -c 'sudo ./patch_strings_in_file "$1" "$dep_path_old" "$dep_path_new"' sh
+        grep -rl "$NIX_STORE_SOURCE" "$TARGET_DIR" \
+                | xargs -n 1 -P 4 sh -c 'sudo ./patch_strings_in_file "$1" "$dep_path_old" "$dep_path_new"' sh
 done
 
-rm -rf "$INSTALLER_DIR"
-sudo mkdir "$INSTALLER_DIR"
-sudo cp -r "$APP_DIR" "$INSTALLER_DIR"
-sudo ln -s /Applications "$INSTALLER_DIR/Applications"
-echo 'Use Disk Utility "File > New Image > Image from Folder" to create DMG.'
+INSTALLER_DIR="/dev/null"
 
-# TODO: look at using a DMG builder like this:
-# https://github.com/andreyvit/create-dmg
+if [ ! -z "$APP_NAME" ]; then
+	#INSTALLER_DIR="/Applications/$PROGRAM_NAME-Installer"
+	INSTALLER_DIR="$(mktemp -d -t """$PROGRAM_NAME-Installer.XXXXXXXXXX""")"
+else
+	INSTALLER_DIR="$(mktemp -d -t """$PROGRAM_NAME.XXXXXXXXXX""")/$PROGRAM_NAME.tar.gz"
+fi
 
-unset dep_path_old
-unset dep_path_new
+if [ ! -z "$APP_NAME" ]; then
+	if [ -d "$INSTALLER_DIR" ]; then
+		while true; do
+		    read -rp "Remove old $INSTALLER_DIR directory? y/n " yn
+		    case $yn in
+			[Yy]* ) sudo rm -rf "$INSTALLER_DIR"; break;;
+			[Nn]* ) exit;;
+			* ) echo "Please answer yes or no.";;
+		    esac
+		done
+	fi
+
+	sudo mkdir "$INSTALLER_DIR"
+	sudo cp -r "$TARGET_DIR" "$INSTALLER_DIR"
+	sudo ln -s /Applications "$INSTALLER_DIR/Applications"
+
+	echo ""
+	echo "$PROGRAM_NAME executable bundle: $TARGET_DIR"
+	echo "  bundle for creating DMG: $INSTALLER_DIR"
+
+	echo 'Use Disk Utility "File > New Image > Image from Folder" to create DMG.'
+	# TODO: look at using a DMG builder like this:
+	# https://github.com/andreyvit/create-dmg
+	# But note that project is looking for new maintainers.
+
+	echo 'TODO: how do we sign this? Do we sign both the DMG and the XYZ.app?'
+	echo 'Until the signing is done, it'll be necessary to right-click open.
+else
+	tar -czvf "$INSTALLER_DIR" "$TARGET_DIR"	
+	echo ""
+	echo "$PROGRAM_NAME executable bundle: $TARGET_DIR"
+	echo "  compressed bundle: $INSTALLER_DIR"
+	echo "Add $TARGET_DIR to your PATH"
+fi
